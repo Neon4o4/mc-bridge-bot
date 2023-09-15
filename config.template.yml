@@ -1,0 +1,39 @@
+telegram:
+  token: ''
+  base_url: ''
+  base_file_url: ''
+
+rcon:
+  host: ''
+  port: 0
+  password: ''
+
+logging:
+  version: 1
+  disable_existing_loggers: True
+  formatters:
+    simple:
+      format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+      datefmt: '%Y-%m-%d %H:%M:%S'
+    colored:
+      (): 'coloredlogs.ColoredFormatter'
+      format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+      datefmt: '%Y-%m-%d %H:%M:%S'
+  handlers:
+    console:
+      class: logging.StreamHandler
+      level: DEBUG
+      formatter: colored
+      stream: ext://sys.stdout
+    file:
+      class : logging.handlers.TimedRotatingFileHandler
+      level: INFO
+      formatter: simple
+      when: midnight
+      interval: 1
+      backupCount: 3
+      filename: logs/bot.log
+  loggers: {}
+  root:
+    level: DEBUG
+    handlers: [console, file]
