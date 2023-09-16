@@ -125,7 +125,7 @@ class MinecraftCommandHandler:
 
         async with self.log_bridge_lock:
             await self.mc_log_bridge_inner(bot, chat_id)
-    
+
     async def mc_log_bridge_inner(self, bot: ExtBot, chat_id: int) -> None:
         logfile = os.path.join(MinecraftCommandHandler.MC_CONFIG.base_dir, MinecraftCommandHandler.MC_CONFIG.logfile)
         if not os.path.exists(logfile):
@@ -279,7 +279,9 @@ class MinecraftCommandHandler:
     @staticmethod
     async def say(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         content = update.message.text.split(maxsplit=1)[-1]
-        response = await MinecraftCommandHandler.RCON_CLIENT.send_command("say", content)
+        response = await MinecraftCommandHandler.RCON_CLIENT.send_command(
+            "say", f"[{update.message.from_user.full_name}]: ", content
+        )
         response = response or "sent to server"
         await update.message.reply_text(response, reply_to_message_id=update.message.message_id)
 
