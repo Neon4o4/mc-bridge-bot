@@ -41,7 +41,7 @@ if __name__ == "__main__":
         mc_config["rcon_host"],
         mc_config["rcon_port"],
         mc_config["rcon_password"],
-        mc_config["backup_chat_id"],
+        mc_config["tg_chat_id"],
         mc_config["daily_backup"],
     )
 

@@ -6,6 +6,7 @@ from datetime import timezone
 import logging
 from functools import wraps
 import os
+import re
 from sys import stderr
 from typing import List, Dict, Tuple
 from urllib import response
@@ -59,7 +60,7 @@ class MCConfig:
     rcon_host: str
     rcon_port: int
     rcon_password: str
-    backup_chat_id: int
+    tg_chat_id: int
     daily_backup: str
 
 
@@ -76,11 +77,11 @@ class MinecraftCommandHandler:
         rcon_host: str,
         rcon_port: int,
         rcon_password: str,
-        backup_chat_id: int,
+        tg_chat_id: int,
         daily_backup: str,
     ) -> None:
         MinecraftCommandHandler.MC_CONFIG = MCConfig(
-            mc_dir, mc_logfile, mc_world_dir, rcon_host, rcon_port, rcon_password, backup_chat_id, daily_backup
+            mc_dir, mc_logfile, mc_world_dir, rcon_host, rcon_port, rcon_password, tg_chat_id, daily_backup
         )
 
         MinecraftCommandHandler.RCON_CLIENT = RCONClient(MinecraftCommandHandler.MC_CONFIG, 5, 5)
@@ -92,13 +93,18 @@ class MinecraftCommandHandler:
 
         # player watcher
         self.online_players: List[str] = []
-        self.app.job_queue.run_repeating(self.player_watcher, first=10, interval=5)
+        # self.app.job_queue.run_repeating(self.player_watcher, first=10, interval=5)
 
         # backup job
         self.app.job_queue.run_daily(
             MinecraftCommandHandler.backup_job,
             datetime_time(2, 30, 0, tzinfo=datetime.now().astimezone().tzinfo),
         )
+
+        # mc log bridge
+        self.current_log_tell = None
+        self.log_bridge_lock = asyncio.Lock()
+        self.app.job_queue.run_repeating(self.mc_log_bridge, first=10, interval=3)
 
     @staticmethod
     async def set_commands(context: CallbackContext) -> None:
@@ -112,6 +118,62 @@ class MinecraftCommandHandler:
     async def player_watcher(self, context: CallbackContext) -> None:
         logger.info("current players: %s", self.online_players)
         # TODO update players
+
+    async def mc_log_bridge(self, context: CallbackContext) -> None:
+        chat_id = MinecraftCommandHandler.MC_CONFIG.tg_chat_id
+        bot: ExtBot = context.bot
+
+        async with self.log_bridge_lock:
+            await self.mc_log_bridge_inner(bot, chat_id)
+    
+    async def mc_log_bridge_inner(self, bot: ExtBot, chat_id: int) -> None:
+        logfile = os.path.join(MinecraftCommandHandler.MC_CONFIG.base_dir, MinecraftCommandHandler.MC_CONFIG.logfile)
+        if not os.path.exists(logfile):
+            logger.warning("log file does not exist: %s", logfile)
+            return
+
+        lines: List[str] = []
+        with open(logfile, "r") as f:
+            f.seek(0, os.SEEK_END)
+            current_end = f.tell()
+            if self.current_log_tell is None:
+                self.current_log_tell = current_end
+                logger.info("set current log tell to file end: %s", current_end)
+
+            if current_end < self.current_log_tell:
+                logger.warning("file reset. reading from the begining")
+                self.current_log_tell = 0
+
+            # seek to (last) read position
+            f.seek(self.current_log_tell)
+
+            current_tell = f.tell()
+            while True:
+                line = f.readline()
+                if not line:
+                    f.seek(current_tell)
+                    break
+                lines.append(line)
+                current_tell = f.tell()
+
+            logger.info("read %s lines", len(lines))
+            logger.info("set current log tell [%s] to: [%s]", self.current_log_tell, current_tell)
+            self.current_log_tell = current_tell
+
+        # find useful lines and send to chat
+        PATTERN_CHAT = re.compile(
+            r"\[Server thread/INFO] \[net.minecraft.server.MinecraftServer/]:\s+(?:\[Not Secure]\s+)?<(.+)>\s+(.+)"
+        )
+        PATTERN_EVENT = re.compile(r"\[Server thread/INFO] \[net.minecraft.server.MinecraftServer/]:\s+(?!\[)(.+)")
+        for line in lines:
+            found_chat = PATTERN_CHAT.findall(line)
+            for who, what in found_chat:
+                await bot.send_message(chat_id=chat_id, text=f"{who}: {what}")
+                logger.info("server chat: [%s] %s", who, what)
+            found_event = PATTERN_EVENT.findall(line)
+            for what in found_event:
+                await bot.send_message(chat_id=chat_id, text=what)
+                logger.info("server event: %s", what)
 
     @MinecraftCommands.register("list", "Lists players on the server")
     @staticmethod
@@ -154,7 +216,7 @@ class MinecraftCommandHandler:
     @staticmethod
     async def backup_job(context: CallbackContext) -> None:
         logger.info("backup_job started")
-        chat_id = MinecraftCommandHandler.MC_CONFIG.backup_chat_id
+        chat_id = MinecraftCommandHandler.MC_CONFIG.tg_chat_id
         bot: ExtBot = context.bot
         progress_msg = await bot.send_message(chat_id, "Backing up...")
         await MinecraftCommandHandler.backup_world(progress_msg)
