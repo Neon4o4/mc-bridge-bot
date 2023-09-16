@@ -8,6 +8,11 @@ rcon:
   port: 0
   password: ''
 
+mc-server:
+  base_dir: ''
+  logfile: ''
+  world_dir: ''
+
 logging:
   version: 1
   disable_existing_loggers: True

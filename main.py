@@ -1,10 +1,9 @@
 import logging
 
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Defaults
 
 from config import CONFIG
-
 from minecraft import MinecraftCommandHandler
 
 logger = logging.getLogger(__name__)
@@ -20,19 +19,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 if __name__ == "__main__":
     tg_config = CONFIG["telegram"]
-    rcon_config = CONFIG["rcon"]
+    mc_config = CONFIG["mc-server"]
 
     app = (
         ApplicationBuilder()
         .token(tg_config["token"])
         .base_url(tg_config["base_url"])
         .base_file_url("base_file_url")
+        .defaults(Defaults(block=False))
         .build()
     )
 
     logger.info("bot starting")
 
     app.add_handler(CommandHandler("start", start))
-    MinecraftCommandHandler(app, rcon_config["host"], rcon_config["port"], rcon_config["password"])
+    MinecraftCommandHandler(
+        app,
+        mc_config["base_dir"],
+        mc_config["logfile"],
+        mc_config["world_dir"],
+        mc_config["rcon_host"],
+        mc_config["rcon_port"],
+        mc_config["rcon_password"],
+        mc_config["backup_chat_id"],
+        mc_config["daily_backup"],
+    )
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)

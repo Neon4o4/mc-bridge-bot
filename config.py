@@ -3,7 +3,7 @@ import yaml
 
 is_prod = os.environ.get('IS_PROD')
 
-config_file_name = 'config.prod.yaml'
+config_file_name = 'config.prod.yml'
 if not is_prod:
     config_file_name = os.environ.get('CONFIG_FILE_NAME') or 'config.dev.yml'
 

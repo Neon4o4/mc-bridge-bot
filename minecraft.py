@@ -1,10 +1,17 @@
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime
+from datetime import time as datetime_time
+from datetime import timezone
 import logging
 from functools import wraps
+import os
+from sys import stderr
 from typing import List, Dict, Tuple
 from urllib import response
 
 import aiomcrcon
-from telegram import Update
+from telegram import Message, Update
 from telegram.ext import ContextTypes, ExtBot, CallbackContext, Application, CommandHandler
 
 
@@ -23,6 +30,7 @@ class MinecraftCommands:
                     cmd_chat_id = update.effective_chat.id
                     cmd_msg_id = update.message.message_id
                     await func(update, context)
+                    logger.info("[%s] command executed in chat [%s] message [%s]", cmd, cmd_chat_id, cmd_msg_id)
                 except Exception as e:
                     logger.exception("[%s] command failed in chat [%s] message [%s]:", cmd, cmd_chat_id, cmd_msg_id)
                     try:
@@ -43,11 +51,39 @@ class MinecraftCommands:
         return wrapper
 
 
+@dataclass
+class MCConfig:
+    base_dir: str
+    logfile: str
+    world_dir: str
+    rcon_host: str
+    rcon_port: int
+    rcon_password: str
+    backup_chat_id: int
+    daily_backup: str
+
+
 class MinecraftCommandHandler:
+    MC_CONFIG: MCConfig = None
     RCON_CLIENT: "RCONClient" = None
 
-    def __init__(self, app: Application, rcon_host: str, rcon_port: int, rcon_password: str) -> None:
-        MinecraftCommandHandler.RCON_CLIENT = RCONClient(rcon_host, rcon_port, rcon_password, 5, 5)
+    def __init__(
+        self,
+        app: Application,
+        mc_dir: str,
+        mc_logfile: str,
+        mc_world_dir: str,
+        rcon_host: str,
+        rcon_port: int,
+        rcon_password: str,
+        backup_chat_id: int,
+        daily_backup: str,
+    ) -> None:
+        MinecraftCommandHandler.MC_CONFIG = MCConfig(
+            mc_dir, mc_logfile, mc_world_dir, rcon_host, rcon_port, rcon_password, backup_chat_id, daily_backup
+        )
+
+        MinecraftCommandHandler.RCON_CLIENT = RCONClient(MinecraftCommandHandler.MC_CONFIG, 5, 5)
 
         self.app = app
         for cmd, (_, handler) in MinecraftCommands.COMMANDS.items():
@@ -57,6 +93,12 @@ class MinecraftCommandHandler:
         # player watcher
         self.online_players: List[str] = []
         self.app.job_queue.run_repeating(self.player_watcher, first=10, interval=5)
+
+        # backup job
+        self.app.job_queue.run_daily(
+            MinecraftCommandHandler.backup_job,
+            datetime_time(2, 30, 0, tzinfo=datetime.now().astimezone().tzinfo),
+        )
 
     @staticmethod
     async def set_commands(context: CallbackContext) -> None:
@@ -106,8 +148,64 @@ class MinecraftCommandHandler:
     @MinecraftCommands.register("save", "Saves the server to disk")
     @staticmethod
     async def save_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        progress_msg = await update.message.reply_text("Saving...", reply_to_message_id=update.message.message_id)
+        await MinecraftCommandHandler.backup_world(progress_msg)
+
+    @staticmethod
+    async def backup_job(context: CallbackContext) -> None:
+        logger.info("backup_job started")
+        chat_id = MinecraftCommandHandler.MC_CONFIG.backup_chat_id
+        bot: ExtBot = context.bot
+        progress_msg = await bot.send_message(chat_id, "Backing up...")
+        await MinecraftCommandHandler.backup_world(progress_msg)
+        await progress_msg.delete()
+
+    @staticmethod
+    async def backup_world(progress_msg: Message) -> None:
         response = await MinecraftCommandHandler.RCON_CLIENT.send_command("save-all")
-        await update.message.reply_text(response, reply_to_message_id=update.message.message_id)
+        logger.info("backup response: %s", response)
+
+        await progress_msg.edit_text("World saved. Backing up...")
+        # backup
+        mc_config = MinecraftCommandHandler.MC_CONFIG
+
+        backup_time = datetime.now()
+        backup_filename = f"{mc_config.world_dir}.{backup_time.strftime('%Y-%m-%d_%H-%M-%S')}.tar.gz"
+        proc = await asyncio.create_subprocess_exec(
+            "tar",
+            "-czf",
+            backup_filename,
+            os.path.join(mc_config.base_dir, mc_config.world_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        err = proc.returncode
+        if err:
+            stderr = stderr.decode().strip()
+            logger.error("backup failed: [%s] %s", err, stderr)
+            if os.path.exists(backup_filename):
+                os.remove(backup_filename)
+            logger.info("backup removed: %s", backup_filename)
+            await progress_msg.edit_text(f"Backup failed: [{err}] {stderr}")
+        else:
+            stdout = stdout.decode().strip()
+            logger.info("backup succeeded: %s", stdout)
+            await progress_msg.edit_text(f"Backup succeeded {stdout}. Uploading...")
+            # upload
+            bot: ExtBot = progress_msg.get_bot()
+            await bot.send_document(
+                chat_id=progress_msg.chat_id,
+                document=backup_filename,
+                reply_to_message_id=progress_msg.message_id,
+                caption=f'Backup of [{mc_config.world_dir}] @ {backup_time.strftime("%Y-%m-%d %H:%M:%S")}',
+                connect_timeout=15,
+                read_timeout=30,
+                write_timeout=300,
+            )
+            logger.info("backup uploaded: %s", backup_filename)
+            os.remove(backup_filename)
+            logger.info("backup removed: %s", backup_filename)
 
     @MinecraftCommands.register("seed", "Displays the world seed")
     @staticmethod
@@ -125,15 +223,15 @@ class MinecraftCommandHandler:
 
 
 class RCONClient:
-    def __init__(self, host: str, port: int, password: str, connect_timeout: int, read_timeout: int) -> None:
-        self.host = host
-        self.port = port
-        self.password = password
+    def __init__(self, server_config: MCConfig, connect_timeout: int, read_timeout: int) -> None:
+        self.server_config = server_config
 
         self.connect_timeout = connect_timeout
         self.read_timeout = read_timeout
 
-        self.client = aiomcrcon.Client(host=self.host, port=self.port, password=self.password)
+        self.client = aiomcrcon.Client(
+            self.server_config.rcon_host, self.server_config.rcon_port, self.server_config.rcon_password
+        )
 
     async def send_command(self, command: str, *args, timeout: int = 0) -> str:
         timeout = timeout or self.read_timeout
