@@ -235,41 +235,47 @@ class MinecraftCommandHandler:
 
         backup_time = datetime.now()
         backup_filename = f"{mc_config.world_dir}.{backup_time.strftime('%Y-%m-%d_%H-%M-%S')}.tar.gz"
-        proc = await asyncio.create_subprocess_exec(
-            "tar",
-            "-czf",
-            backup_filename,
-            os.path.join(mc_config.base_dir, mc_config.world_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        err = proc.returncode
-        if err:
-            stderr = stderr.decode().strip()
-            logger.error("backup failed: [%s] %s", err, stderr)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "tar",
+                "-czf",
+                backup_filename,
+                os.path.join(mc_config.base_dir, mc_config.world_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            err = proc.returncode
+            if err:
+                stderr = stderr.decode().strip()
+                logger.error("backup failed: [%s] %s", err, stderr)
+                if os.path.exists(backup_filename):
+                    os.remove(backup_filename)
+                logger.info("backup removed: %s", backup_filename)
+                await progress_msg.edit_text(f"Backup failed: [{err}] {stderr}")
+            else:
+                stdout = stdout.decode().strip()
+                logger.info("backup succeeded: %s", stdout)
+                await progress_msg.edit_text(f"Backup succeeded {stdout}. Uploading...")
+                # upload
+                bot: ExtBot = progress_msg.get_bot()
+                await bot.send_document(
+                    chat_id=progress_msg.chat_id,
+                    document=backup_filename,
+                    reply_to_message_id=progress_msg.message_id,
+                    caption=f'Backup of [{mc_config.world_dir}] @ {backup_time.strftime("%Y-%m-%d %H:%M:%S")}',
+                    connect_timeout=15,
+                    read_timeout=30,
+                    write_timeout=300,
+                )
+                logger.info("backup uploaded: %s", backup_filename)
+                await progress_msg.edit_text("Backup finished.")
+        except Exception:
+            logger.exception("backup failed")
+        finally:
             if os.path.exists(backup_filename):
                 os.remove(backup_filename)
-            logger.info("backup removed: %s", backup_filename)
-            await progress_msg.edit_text(f"Backup failed: [{err}] {stderr}")
-        else:
-            stdout = stdout.decode().strip()
-            logger.info("backup succeeded: %s", stdout)
-            await progress_msg.edit_text(f"Backup succeeded {stdout}. Uploading...")
-            # upload
-            bot: ExtBot = progress_msg.get_bot()
-            await bot.send_document(
-                chat_id=progress_msg.chat_id,
-                document=backup_filename,
-                reply_to_message_id=progress_msg.message_id,
-                caption=f'Backup of [{mc_config.world_dir}] @ {backup_time.strftime("%Y-%m-%d %H:%M:%S")}',
-                connect_timeout=15,
-                read_timeout=30,
-                write_timeout=300,
-            )
-            logger.info("backup uploaded: %s", backup_filename)
-            os.remove(backup_filename)
-            logger.info("backup removed: %s", backup_filename)
+                logger.info("backup removed: %s", backup_filename)
 
     @MinecraftCommands.register("seed", "Displays the world seed")
     @staticmethod
@@ -296,7 +302,7 @@ class RCONClient:
         self.read_timeout = read_timeout
 
         self.reset_client()
-    
+
     def reset_client(self):
         self.client = aiomcrcon.Client(
             self.server_config.rcon_host, self.server_config.rcon_port, self.server_config.rcon_password
@@ -309,16 +315,16 @@ class RCONClient:
             response, response_type = await self.client.send_cmd(" ".join([command] + list(args)), timeout)
         except socket.error as e:
             if e.errno == errno.EPIPE:
-                logger.warning('Connection closed. Reset client and try again')
+                logger.warning("Connection closed. Reset client and try again")
                 if retry > 0:
                     self.reset_client()
                     await asyncio.sleep(1)
                     return await self.send_command(command, *args, timeout=timeout, retry=retry - 1)
                 else:
-                    logger.exception('Connection closed. Max retries reached')
+                    logger.exception("Connection closed. Max retries reached")
                     raise
             else:
-                logger.exception('Socket error')
-                raise 
+                logger.exception("Socket error")
+                raise
         logger.info("rcon command executed: [%s], response: [%s] %s", command, response_type, response)
         return response.strip()
