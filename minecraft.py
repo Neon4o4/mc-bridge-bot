@@ -3,10 +3,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from datetime import time as datetime_time
 from datetime import timezone
+import errno
 import logging
 from functools import wraps
 import os
 import re
+import socket
 from sys import stderr
 from typing import List, Dict, Tuple
 from urllib import response
@@ -40,8 +42,8 @@ class MinecraftCommands:
                             reply_to_message_id=cmd_msg_id,
                             text=f"Error: {e}",
                         )
-                    except Exception as e:
-                        logger.error(
+                    except Exception:
+                        logger.exception(
                             "[%s] failed to send error message; chat [%s] message [%s]", cmd, cmd_chat_id, cmd_msg_id
                         )
 
@@ -293,13 +295,30 @@ class RCONClient:
         self.connect_timeout = connect_timeout
         self.read_timeout = read_timeout
 
+        self.reset_client()
+    
+    def reset_client(self):
         self.client = aiomcrcon.Client(
             self.server_config.rcon_host, self.server_config.rcon_port, self.server_config.rcon_password
         )
 
-    async def send_command(self, command: str, *args, timeout: int = 0) -> str:
+    async def send_command(self, command: str, *args, timeout: int = 0, retry: int = 2) -> str:
         timeout = timeout or self.read_timeout
         await self.client.connect(self.connect_timeout)
-        response, response_type = await self.client.send_cmd(" ".join([command] + list(args)), timeout)
+        try:
+            response, response_type = await self.client.send_cmd(" ".join([command] + list(args)), timeout)
+        except socket.error as e:
+            if e.errno == errno.EPIPE:
+                logger.warning('Connection closed. Reset client and try again')
+                if retry > 0:
+                    self.reset_client()
+                    await asyncio.sleep(1)
+                    return await self.send_command(command, *args, timeout=timeout, retry=retry - 1)
+                else:
+                    logger.exception('Connection closed. Max retries reached')
+                    raise
+            else:
+                logger.exception('Socket error')
+                raise 
         logger.info("rcon command executed: [%s], response: [%s] %s", command, response_type, response)
         return response.strip()
