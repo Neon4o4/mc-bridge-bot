@@ -1,34 +1,31 @@
 import asyncio
-from dataclasses import dataclass
-from datetime import datetime
-from datetime import time as datetime_time
-from datetime import timezone
 import errno
 import logging
-from functools import wraps
 import os
 import re
 import socket
-from sys import stderr
-from typing import List, Dict, Tuple
-from urllib import response
+from dataclasses import dataclass
+from datetime import datetime
+from datetime import time as datetime_time
+from functools import wraps
+from typing import List, Dict, Tuple, Any, Coroutine, Callable
 
 import aiomcrcon
 from telegram import Message, Update
 from telegram.ext import ContextTypes, ExtBot, CallbackContext, Application, CommandHandler
 
-
 logger = logging.getLogger(__name__)
 
 
 class MinecraftCommands:
-    COMMANDS: Dict[str, Tuple[str, str]] = {}
+    COMMANDS: Dict[str, Tuple[str, Callable[[Update, Any], Coroutine[Any, Any, None]]]] = {}
 
     @staticmethod
     def register(cmd: str, desc: str):
         def wrapper(func):
             @wraps(func)
             async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+                cmd_chat_id = cmd_msg_id = None
                 try:
                     cmd_chat_id = update.effective_chat.id
                     cmd_msg_id = update.message.message_id
@@ -71,16 +68,16 @@ class MinecraftCommandHandler:
     RCON_CLIENT: "RCONClient" = None
 
     def __init__(
-        self,
-        app: Application,
-        mc_dir: str,
-        mc_logfile: str,
-        mc_world_dir: str,
-        rcon_host: str,
-        rcon_port: int,
-        rcon_password: str,
-        tg_chat_id: int,
-        daily_backup: str,
+            self,
+            app: Application,
+            mc_dir: str,
+            mc_logfile: str,
+            mc_world_dir: str,
+            rcon_host: str,
+            rcon_port: int,
+            rcon_password: str,
+            tg_chat_id: int,
+            daily_backup: str,
     ) -> None:
         MinecraftCommandHandler.MC_CONFIG = MCConfig(
             mc_dir, mc_logfile, mc_world_dir, rcon_host, rcon_port, rcon_password, tg_chat_id, daily_backup
@@ -258,7 +255,7 @@ class MinecraftCommandHandler:
                 logger.info("backup succeeded: %s", stdout)
                 await progress_msg.edit_text(f"Backup succeeded {stdout}. Uploading...")
                 # upload
-                bot: ExtBot = progress_msg.get_bot()
+                bot = progress_msg.get_bot()
                 await bot.send_document(
                     chat_id=progress_msg.chat_id,
                     document=backup_filename,
