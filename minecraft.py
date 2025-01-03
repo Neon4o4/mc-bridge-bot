@@ -67,6 +67,11 @@ class MinecraftCommandHandler:
     MC_CONFIG: MCConfig = None
     RCON_CLIENT: "RCONClient" = None
 
+    PATTERN_CHAT = re.compile(
+        r"\[Server thread/INFO] \[net.minecraft.server.MinecraftServer/]:\s+(?:\[Not Secure]\s+)?<(.+)>\s+(.+)"
+    )
+    PATTERN_EVENT = re.compile(r"\[Server thread/INFO] \[net.minecraft.server.MinecraftServer/]:\s+(?!\[)(.+)")
+
     def __init__(
             self,
             app: Application,
@@ -84,6 +89,16 @@ class MinecraftCommandHandler:
         )
 
         MinecraftCommandHandler.RCON_CLIENT = RCONClient(MinecraftCommandHandler.MC_CONFIG, 5, 5)
+
+        MinecraftCommands.register("list", "Lists players on the server")(self.list)
+        MinecraftCommands.register("whitelist", "Manages the list of players allowed to use this server")(self.whitelist)
+        MinecraftCommands.register("op", "Grants operator status to a player")(self.op)
+        MinecraftCommands.register("deop", "Revokes operator status from a player")(self.deop)
+        MinecraftCommands.register("kill", "Kills entities (players, mobs, items, etc.)")(self.kill)
+        MinecraftCommands.register("kick", "Kicks a player off a server")(self.kick)
+        MinecraftCommands.register("save", "Saves the server to disk")(self.save_all)
+        MinecraftCommands.register("seed", "Displays the world seed")(self.seed)
+        MinecraftCommands.register("say", "Displays a message to multiple players")(self.say)
 
         self.app = app
         for cmd, (_, handler) in MinecraftCommands.COMMANDS.items():
@@ -160,53 +175,49 @@ class MinecraftCommandHandler:
             self.current_log_tell = current_tell
 
         # find useful lines and send to chat
-        PATTERN_CHAT = re.compile(
-            r"\[Server thread/INFO] \[net.minecraft.server.MinecraftServer/]:\s+(?:\[Not Secure]\s+)?<(.+)>\s+(.+)"
-        )
-        PATTERN_EVENT = re.compile(r"\[Server thread/INFO] \[net.minecraft.server.MinecraftServer/]:\s+(?!\[)(.+)")
+
         for line in lines:
-            found_chat = PATTERN_CHAT.findall(line)
+            found_chat = MinecraftCommandHandler.PATTERN_CHAT.findall(line)
             for who, what in found_chat:
                 await bot.send_message(chat_id=chat_id, text=f"{who}: {what}")
                 logger.info("server chat: [%s] %s", who, what)
-            found_event = PATTERN_EVENT.findall(line)
+            found_event = MinecraftCommandHandler.PATTERN_EVENT.findall(line)
             for what in found_event:
                 await bot.send_message(chat_id=chat_id, text=what)
                 logger.info("server event: %s", what)
 
-    @MinecraftCommands.register("list", "Lists players on the server")
     @staticmethod
     async def list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         response = await MinecraftCommandHandler.RCON_CLIENT.send_command("list")
         await update.message.reply_text(response, reply_to_message_id=update.message.message_id)
 
-    @MinecraftCommands.register("op", "Grants operator status to a player")
+    @staticmethod
+    async def whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        response = await MinecraftCommandHandler.RCON_CLIENT.send_command("whitelist", *update.message.text.split()[1:])
+        await update.message.reply_text(response, reply_to_message_id=update.message.message_id)
+
     @staticmethod
     async def op(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         response = await MinecraftCommandHandler.RCON_CLIENT.send_command("op", *update.message.text.split()[1:])
         await update.message.reply_text(response, reply_to_message_id=update.message.message_id)
 
-    @MinecraftCommands.register("deop", "Revokes operator status from a player")
     @staticmethod
     async def deop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         response = await MinecraftCommandHandler.RCON_CLIENT.send_command("deop", *update.message.text.split()[1:])
         await update.message.reply_text(
             response, reply_to_message_id=update.message.message_id
-        ) @ MinecraftCommands.register("deop", "Grants operator status to a player")
+        )
 
-    @MinecraftCommands.register("kill", "Kills entities (players, mobs, items, etc.)")
     @staticmethod
     async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         response = await MinecraftCommandHandler.RCON_CLIENT.send_command("kill", *update.message.text.split()[1:])
         await update.message.reply_text(response, reply_to_message_id=update.message.message_id)
 
-    @MinecraftCommands.register("kick", "Kicks a player off a server")
     @staticmethod
     async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         response = await MinecraftCommandHandler.RCON_CLIENT.send_command("kick", *update.message.text.split()[1:])
         await update.message.reply_text(response, reply_to_message_id=update.message.message_id)
 
-    @MinecraftCommands.register("save", "Saves the server to disk")
     @staticmethod
     async def save_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         progress_msg = await update.message.reply_text("Saving...", reply_to_message_id=update.message.message_id)
@@ -274,16 +285,19 @@ class MinecraftCommandHandler:
                 os.remove(backup_filename)
                 logger.info("backup removed: %s", backup_filename)
 
-    @MinecraftCommands.register("seed", "Displays the world seed")
     @staticmethod
     async def seed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         response = await MinecraftCommandHandler.RCON_CLIENT.send_command("seed")
         await update.message.reply_text(response, reply_to_message_id=update.message.message_id)
 
-    @MinecraftCommands.register("say", "Displays a message to multiple players")
     @staticmethod
     async def say(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        content = update.message.text.split(maxsplit=1)[-1]
+        content_parts = update.message.text.split(maxsplit=1)
+        if len(content_parts) < 2:
+            await update.message.reply_text('say something', reply_to_message_id=update.message.message_id)
+            return
+
+        content = content_parts[-1]
         response = await MinecraftCommandHandler.RCON_CLIENT.send_command(
             "say", f"[{update.message.from_user.full_name}]: ", content
         )
@@ -298,6 +312,7 @@ class RCONClient:
         self.connect_timeout = connect_timeout
         self.read_timeout = read_timeout
 
+        self.client: aiomcrcon.Client | None = None
         self.reset_client()
 
     def reset_client(self):

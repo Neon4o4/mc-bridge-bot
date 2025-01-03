@@ -1,4 +1,5 @@
 import os
+
 import yaml
 
 is_prod = os.environ.get('IS_PROD')
@@ -13,4 +14,5 @@ if 'CONFIG' not in globals():
     with open(config_file) as f:
         CONFIG: dict = yaml.safe_load(f)
     import logging.config
+
     logging.config.dictConfig(CONFIG['logging'])
